@@ -1,0 +1,6 @@
+streamlit
+pandas
+requests
+streamlit-aggrid
+reportlab
+python-holidays
