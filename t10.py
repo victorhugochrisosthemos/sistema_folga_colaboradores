@@ -55,7 +55,7 @@ FERIADOS_2026_BR = {
     "2026-12-25": "Natal",
 }
 
-# Modelos comuns na Groq (OpenAI-compatible). Se um falhar, você pode alternar no sidebar.
+# Modelos comuns na Groq (OpenAI-compatible)
 GROQ_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
@@ -311,13 +311,18 @@ def make_pdf(schedule_df: pd.DataFrame, weekday_row: dict, year: int, month: int
     story.append(table)
     story.append(Spacer(1, 10))
 
+    # ✅ Restrições em LISTA (uma por linha)
     if tags:
-        story.append(Paragraph("<b>Restrições:</b> " + ", ".join(tags), styles["Normal"]))
+        restr_html = "<b>Restrições:</b><br/>" + "<br/>".join([f"• {t}" for t in tags])
+        story.append(Paragraph(restr_html, styles["Normal"]))
+        story.append(Spacer(1, 6))
+    else:
+        story.append(Paragraph("<b>Restrições:</b> (nenhuma)", styles["Normal"]))
         story.append(Spacer(1, 6))
 
     if feriados:
-        fer_txt = "; ".join([f"{d.strftime('%d/%m')}: {name}" for d, name in feriados])
-        story.append(Paragraph("<b>Feriados do mês:</b> " + fer_txt, styles["Normal"]))
+        fer_html = "<b>Feriados do mês:</b><br/>" + "<br/>".join([f"• {d.strftime('%d/%m')}: {name}" for d, name in feriados])
+        story.append(Paragraph(fer_html, styles["Normal"]))
     else:
         story.append(Paragraph("<b>Feriados do mês:</b> (não informado)", styles["Normal"]))
 
@@ -327,22 +332,16 @@ def make_pdf(schedule_df: pd.DataFrame, weekday_row: dict, year: int, month: int
 
 
 # ----------------------------
-# Groq (LLM) — agora com erro detalhado
+# Groq (LLM)
 # ----------------------------
 def groq_chat(api_key: str, model: str, messages: list, max_tokens: int = 120, temperature: float = 0.2) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "messages": messages,
-    }
+    payload = {"model": model, "temperature": temperature, "max_tokens": max_tokens, "messages": messages}
 
     r = requests.post(url, headers=headers, json=payload, timeout=30)
 
     if not r.ok:
-        # Mostra o erro real do body (isso resolve seu “não sei o que está errado”)
         try:
             err = r.json()
         except Exception:
@@ -357,16 +356,17 @@ def groq_suggest_short(prompt: str, api_key: str, model: str) -> str:
     return groq_chat(
         api_key=api_key,
         model=model,
-        max_tokens=120,
+        max_tokens=140,
         temperature=0.2,
         messages=[
             {
                 "role": "system",
                 "content": (
-                    "Você é um assistente de escalas 6x1. "
-                    "Responda em PT-BR com UMA sugestão curta (1-3 linhas). "
-                    "Não invente datas; use apenas o contexto fornecido. "
-                    "Se a consideração estiver ambígua, faça 1 pergunta curta."
+                    "Você é um assistente de escala 6x1. Responda em PT-BR com uma sugestão curta (1–3 linhas). "
+                    "Objetivo: transformar a consideração em ação prática (ex.: quais dias marcar F, quantos domingos existem, etc.). "
+                    "Use SOMENTE o contexto (mapa de dias por semana e feriados). "
+                    "NÃO diga que é redundante, a menos que a consideração seja exatamente igual a uma já registrada. "
+                    "Se estiver ambígua, faça 1 pergunta curta."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -374,8 +374,7 @@ def groq_suggest_short(prompt: str, api_key: str, model: str) -> str:
     )
 
 
-def build_llm_context(year_i: int, month_i: int, tags: list) -> str:
-    # Contexto enxuto (para evitar 400 por payload grande)
+def build_llm_context(year_i: int, month_i: int, prev_tags: list) -> str:
     feriados_mes = get_holidays_for_month(year_i, month_i)
     dias_mes_atual = calendar.monthrange(year_i, month_i)[1]
     y_prev, m_prev = prev_month_year(year_i, month_i)
@@ -411,8 +410,8 @@ DIAS DO MÊS POR DIA DA SEMANA:
 TURNOS CADASTRADOS: {', '.join(turnos_nomes) if turnos_nomes else '(nenhum)'}
 COLABORADORES (amostra): {', '.join([n for n in employees_nomes if n]) if employees_nomes else '(nenhum)'}
 
-CONSIDERAÇÕES JÁ REGISTRADAS (ordem):
-- """ + "\n- ".join(tags) + "\n"
+CONSIDERAÇÕES JÁ REGISTRADAS:
+- """ + ("\n- ".join(prev_tags) if prev_tags else "(nenhuma)") + "\n"
     return ctx.strip()
 
 
@@ -424,6 +423,10 @@ def groq_test_minimal(api_key: str, model: str) -> str:
         temperature=0.0,
         messages=[{"role": "user", "content": "Responda apenas: OK"}],
     )
+
+
+def normalize_text(s: str) -> str:
+    return " ".join((s or "").strip().lower().split())
 
 
 # ----------------------------
@@ -472,7 +475,7 @@ if "active_month" not in st.session_state:
 if "ai_suggestions" not in st.session_state:
     st.session_state.ai_suggestions = {}  # {tag: suggestion}
 if "groq_model" not in st.session_state:
-    st.session_state.groq_model = "llama-3.1-70b-versatile"
+    st.session_state.groq_model = GROQ_MODELS[0]
 
 
 # Sidebar
@@ -494,7 +497,7 @@ with st.sidebar:
 
     if st.button("Testar GROQ agora"):
         if not api_key_env:
-            st.error("Não encontrei GROQ_API_KEY no ambiente. Defina no terminal e reinicie o app.")
+            st.error("Não encontrei GROQ_API_KEY no ambiente. Defina nas Secrets (Streamlit Cloud) ou no terminal e reinicie.")
         else:
             try:
                 resp = groq_test_minimal(api_key_env, st.session_state.groq_model)
@@ -750,29 +753,46 @@ left_sp, center, right_sp = st.columns([0.2, 9.6, 0.2])
 with center:
     new_tag = st.text_input(
         "Adicionar consideração",
-        placeholder="Ex: Maria folga 2 domingos",
+        placeholder="Ex: Maria folga 2 domingos no mês",
         label_visibility="collapsed"
     )
     add_tag = st.button("Adicionar Consideração", use_container_width=True)
 
     if add_tag:
         t = new_tag.strip()
-        if t and t not in st.session_state.tags:
-            st.session_state.tags.append(t)
-            persist_rules(st.session_state.tags)
+        if t:
+            norm_t = normalize_text(t)
+            existing_norm = [normalize_text(x) for x in st.session_state.tags]
 
-            api_key = os.getenv("GROQ_API_KEY", "").strip()
-            if api_key:
-                try:
-                    ctx = build_llm_context(year_i, month_i, st.session_state.tags)
-                    prompt = f"{ctx}\nNOVA CONSIDERAÇÃO: {t}\n\nDê uma sugestão curta e consistente."
-                    model = st.session_state.groq_model
-                    sug = groq_suggest_short(prompt, api_key=api_key, model=model)
-                    st.session_state.ai_suggestions[t] = sug
-                except Exception as e:
-                    st.session_state.ai_suggestions[t] = f"(Não consegui gerar sugestão agora: {e})"
+            # ✅ duplicata REAL (igual)
+            if norm_t in existing_norm:
+                st.session_state.ai_suggestions[t] = "Essa consideração já existe exatamente igual."
             else:
-                st.session_state.ai_suggestions[t] = "(Defina a variável de ambiente GROQ_API_KEY para ver sugestão da IA.)"
+                # adiciona e salva
+                st.session_state.tags.append(t)
+                persist_rules(st.session_state.tags)
+
+                api_key = os.getenv("GROQ_API_KEY", "").strip()
+                if api_key:
+                    try:
+                        prev_tags = st.session_state.tags[:-1]  # ✅ NÃO inclui a nova
+                        ctx = build_llm_context(year_i, month_i, prev_tags)
+
+                        prompt = (
+                            f"{ctx}\n\n"
+                            f"NOVA CONSIDERAÇÃO: {t}\n\n"
+                            "Sugira como aplicar isso na escala deste mês usando os dias corretos (ex.: DOM = datas listadas). "
+                            "Se envolver 'domingo(s)', cite as datas de DOM do mês. "
+                            "Resposta curta."
+                        )
+
+                        model = st.session_state.groq_model
+                        sug = groq_suggest_short(prompt, api_key=api_key, model=model)
+                        st.session_state.ai_suggestions[t] = sug if sug else "(sem sugestão)"
+                    except Exception as e:
+                        st.session_state.ai_suggestions[t] = f"(Não consegui gerar sugestão agora: {e})"
+                else:
+                    st.session_state.ai_suggestions[t] = "(Defina GROQ_API_KEY para ver sugestão da IA.)"
 
             st.rerun()
 
